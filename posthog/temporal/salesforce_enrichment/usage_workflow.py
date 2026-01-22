@@ -174,7 +174,7 @@ async def update_salesforce_usage_activity(updates: list[SalesforceUsageUpdate])
 
         for batch in batched(update_records, SALESFORCE_UPDATE_BATCH_SIZE):
             try:
-                response = await asyncio.to_thread(sf.bulk.Account.update, list(batch))
+                response = await asyncio.to_thread(sf.bulk.Account.update, list(batch))  # type: ignore[union-attr,arg-type]
                 for result in response:
                     if result.get("success"):
                         success_count += 1

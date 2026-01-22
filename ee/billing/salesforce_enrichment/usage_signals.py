@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from django.db.models import Count, Max, Model
+from django.db.models import Count, Max
 
 import structlog
 
@@ -136,7 +136,7 @@ def get_org_login_recency(org_ids: list[str]) -> dict[str, int | None]:
 
 
 def _get_org_model_count(
-    model: type[Model], org_ids: list[str], period_start: datetime, period_end: datetime
+    model: type[Dashboard] | type[Insight], org_ids: list[str], period_start: datetime, period_end: datetime
 ) -> dict[str, int]:
     """Get count of model instances created per organization in the given period."""
     if not org_ids:

@@ -172,6 +172,9 @@ class TestAggregateTeamsToOrg(TestCase):
 
 
 class TestOrgLoginRecency(TestCase):
+    org: Organization
+    team: Team
+
     @classmethod
     def setUpTestData(cls):
         cls.org = Organization.objects.create(name="Test Org")
@@ -187,7 +190,8 @@ class TestOrgLoginRecency(TestCase):
 
         assert str(self.org.id) in result
         # Allow 1 day tolerance for test timing
-        assert 2 <= result[str(self.org.id)] <= 4
+        days = result[str(self.org.id)]
+        assert days is not None and 2 <= days <= 4
 
     def test_no_login_returns_none(self):
         user = User.objects.create(email="nologin@example.com")
@@ -216,10 +220,14 @@ class TestOrgLoginRecency(TestCase):
 
         # Should return 2 days (most recent), not 10
         assert str(self.org.id) in result
-        assert 1 <= result[str(self.org.id)] <= 3
+        days = result[str(self.org.id)]
+        assert days is not None and 1 <= days <= 3
 
 
 class TestOrgDashboardsCount(TestCase):
+    org: Organization
+    team: Team
+
     @classmethod
     def setUpTestData(cls):
         cls.org = Organization.objects.create(name="Test Org")
@@ -268,6 +276,9 @@ class TestOrgDashboardsCount(TestCase):
 
 
 class TestOrgInsightsCount(TestCase):
+    org: Organization
+    team: Team
+
     @classmethod
     def setUpTestData(cls):
         cls.org = Organization.objects.create(name="Test Org")
@@ -366,6 +377,13 @@ class TestTeamUsageSignalsDataClass(TestCase):
 
 
 class TestGetTeamIdsForOrgs(TestCase):
+    org1: Organization
+    org2: Organization
+    org_no_teams: Organization
+    team1: Team
+    team2: Team
+    team3: Team
+
     @classmethod
     def setUpTestData(cls):
         cls.org1 = Organization.objects.create(name="Test Org 1")
@@ -483,6 +501,9 @@ class TestGetTeamsWithRecordingsInPeriod(TestCase):
 
 
 class TestAggregateUsageSignalsForOrgs(TestCase):
+    org: Organization
+    team: Team
+
     @classmethod
     def setUpTestData(cls):
         cls.org = Organization.objects.create(name="Test Org")
