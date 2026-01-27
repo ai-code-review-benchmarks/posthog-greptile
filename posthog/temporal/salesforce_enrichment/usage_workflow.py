@@ -33,7 +33,7 @@ from ee.billing.salesforce_enrichment.usage_signals import UsageSignals, aggrega
 LOGGER = get_logger(__name__)
 
 # Fields from POSTHOG_USAGE_FIELD_MAPPINGS that are handled specially (not simple attribute->field copy)
-_SPECIAL_FIELDS = {"products_activated_7d", "products_activated_30d"}
+_SPECIAL_FIELDS = frozenset({"products_activated_7d", "products_activated_30d"})
 
 
 @dataclasses.dataclass
@@ -98,12 +98,13 @@ async def cache_org_mappings_activity() -> dict[str, Any]:
 
     cached_count = await get_cached_org_mappings_count()
     if cached_count is not None:
-        logger.info("Cache exists, skipping Salesforce query", cached_total=cached_count)
+        logger.info("cache_hit_skipping_salesforce_query", cached_total=cached_count)
         return {"success": True, "total_mappings": cached_count, "cache_reused": True}
 
-    logger.info("Cache miss, querying Salesforce for org mappings")
+    logger.info("cache_miss_querying_salesforce", action="org_mappings")
 
     sf = get_salesforce_client()
+    # POSTHOG_ORG_ID_FIELD is a trusted constant defined in constants.py, not user input
     query = f"SELECT Id, {POSTHOG_ORG_ID_FIELD} FROM Account WHERE {POSTHOG_ORG_ID_FIELD} != null"
 
     result = await asyncio.to_thread(sf.query_all, query)
@@ -115,7 +116,7 @@ async def cache_org_mappings_activity() -> dict[str, Any]:
 
     await store_org_mappings_in_redis(mappings)
 
-    logger.info("Cached org mappings", total_mappings=len(mappings))
+    logger.info("org_mappings_cached", total_mappings=len(mappings))
     return {"success": True, "total_mappings": len(mappings)}
 
 
@@ -128,7 +129,7 @@ async def fetch_salesforce_org_ids_activity() -> list[SalesforceOrgMapping]:
     cached_mappings = await get_org_mappings_from_redis()
 
     if cached_mappings is None:
-        logger.warning("No cached org mappings found, cache may have expired")
+        logger.warning("org_mappings_cache_miss", reason="cache_expired_or_missing")
         return []
 
     mappings = [
@@ -139,7 +140,7 @@ async def fetch_salesforce_org_ids_activity() -> list[SalesforceOrgMapping]:
         for m in cached_mappings
     ]
 
-    logger.info("Fetched org mappings from cache", total_mappings=len(mappings))
+    logger.info("org_mappings_fetched_from_cache", total_mappings=len(mappings))
     return mappings
 
 
@@ -149,10 +150,10 @@ async def aggregate_usage_signals_activity(org_ids: list[str]) -> dict[str, Usag
     async with Heartbeater():
         close_old_connections()
         logger = LOGGER.bind()
-        logger.info("Aggregating usage signals", org_count=len(org_ids))
+        logger.info("aggregating_usage_signals", org_count=len(org_ids))
 
         signals = await asyncio.to_thread(aggregate_usage_signals_for_orgs, org_ids)
-        logger.info("Aggregated usage signals", org_count=len(org_ids), signals_count=len(signals))
+        logger.info("usage_signals_aggregated", org_count=len(org_ids), signals_count=len(signals))
         return signals
 
 
@@ -181,16 +182,16 @@ async def update_salesforce_usage_activity(updates: list[SalesforceUsageUpdate])
                     else:
                         error_count += 1
                         logger.warning(
-                            "Failed to update Salesforce account",
+                            "salesforce_account_update_failed",
                             account_id=result.get("id"),
                             errors=result.get("errors"),
                         )
             except Exception:
-                logger.exception("Failed to update Salesforce batch", batch_size=len(batch))
+                logger.exception("salesforce_batch_update_failed", batch_size=len(batch))
                 error_count += len(batch)
 
         logger.info(
-            "Completed Salesforce updates",
+            "salesforce_updates_completed",
             success_count=success_count,
             error_count=error_count,
             total_updates=len(updates),
@@ -212,7 +213,7 @@ class SalesforceUsageEnrichmentWorkflow(PostHogWorkflow):
         """Run the usage enrichment workflow."""
         logger = LOGGER.bind()
         logger.info(
-            "Starting Salesforce usage enrichment workflow",
+            "salesforce_usage_enrichment_started",
             batch_size=inputs.batch_size,
             max_orgs=inputs.max_orgs,
             specific_org_id=inputs.specific_org_id,
@@ -226,7 +227,7 @@ class SalesforceUsageEnrichmentWorkflow(PostHogWorkflow):
     async def _run_debug_mode(self, org_id: str) -> dict[str, Any]:
         """Run in debug mode for a single organization."""
         logger = LOGGER.bind()
-        logger.info("Running in debug mode", org_id=org_id)
+        logger.info("debug_mode_started", org_id=org_id)
 
         signals = await workflow.execute_activity(
             aggregate_usage_signals_activity,
@@ -259,16 +260,17 @@ class SalesforceUsageEnrichmentWorkflow(PostHogWorkflow):
         )
 
         if not mappings:
-            logger.info("No Salesforce accounts with PostHog org IDs found")
+            logger.info("no_salesforce_accounts_found")
             return dataclasses.asdict(
                 UsageEnrichmentResult(total_orgs_processed=0, total_orgs_updated=0, error_count=0, errors=[])
             )
 
         if inputs.max_orgs and len(mappings) > inputs.max_orgs:
             logger.info("limiting_to_max_orgs", original_count=len(mappings), max_orgs=inputs.max_orgs)
-            mappings = mappings[: inputs.max_orgs]
+            # Sort by org_id for deterministic behavior in testing
+            mappings = sorted(mappings, key=lambda m: m.posthog_org_id)[: inputs.max_orgs]
 
-        logger.info("Found Salesforce accounts to enrich", count=len(mappings))
+        logger.info("salesforce_accounts_to_enrich", count=len(mappings))
 
         total_processed = 0
         total_updated = 0
@@ -312,7 +314,7 @@ class SalesforceUsageEnrichmentWorkflow(PostHogWorkflow):
                 all_errors.append(error_msg)
 
         if len(all_errors) > 10:
-            logger.warning("Error list truncated", total_errors=len(all_errors), shown_errors=10)
+            logger.warning("error_list_truncated", total_errors=len(all_errors), shown_errors=10)
 
         return dataclasses.asdict(
             UsageEnrichmentResult(

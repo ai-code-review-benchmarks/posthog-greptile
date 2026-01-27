@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from django.test import TestCase
 
@@ -9,7 +10,9 @@ from posthog.temporal.salesforce_enrichment.usage_workflow import (
     SalesforceUsageEnrichmentWorkflow,
     SalesforceUsageUpdate,
     UsageEnrichmentInputs,
+    cache_org_mappings_activity,
     prepare_salesforce_update_record,
+    update_salesforce_usage_activity,
 )
 
 from ee.billing.salesforce_enrichment.usage_signals import UsageSignals
@@ -180,3 +183,118 @@ class TestWorkflowParseInputs(TestCase):
     def test_parse_inputs_invalid_json_raises(self):
         with pytest.raises(json.JSONDecodeError):
             SalesforceUsageEnrichmentWorkflow.parse_inputs(["invalid"])
+
+
+WORKFLOW_MODULE = "posthog.temporal.salesforce_enrichment.usage_workflow"
+
+
+class TestCacheOrgMappingsActivity(TestCase):
+    @pytest.mark.asyncio
+    @patch(f"{WORKFLOW_MODULE}.close_old_connections")
+    @patch(f"{WORKFLOW_MODULE}.get_cached_org_mappings_count", new_callable=AsyncMock, return_value=100)
+    async def test_cache_reused_when_exists(self, _mock_cache_count, _mock_close):
+        result = await cache_org_mappings_activity()
+
+        assert result["success"] is True
+        assert result["total_mappings"] == 100
+        assert result["cache_reused"] is True
+
+    @pytest.mark.asyncio
+    @patch(f"{WORKFLOW_MODULE}.store_org_mappings_in_redis", new_callable=AsyncMock)
+    @patch(f"{WORKFLOW_MODULE}.get_salesforce_client")
+    @patch(f"{WORKFLOW_MODULE}.get_cached_org_mappings_count", new_callable=AsyncMock, return_value=None)
+    @patch(f"{WORKFLOW_MODULE}.close_old_connections")
+    async def test_queries_salesforce_on_cache_miss(self, _mock_close, _mock_cache_count, mock_sf_client, mock_store):
+        mock_sf = MagicMock()
+        mock_sf.query_all.return_value = {
+            "records": [
+                {"Id": "001ABC", "Posthog_Org_ID__c": "org-uuid-1"},
+                {"Id": "001DEF", "Posthog_Org_ID__c": "org-uuid-2"},
+                {"Id": "001GHI", "Posthog_Org_ID__c": None},  # Should be filtered out
+            ]
+        }
+        mock_sf_client.return_value = mock_sf
+
+        with patch(f"{WORKFLOW_MODULE}.asyncio.to_thread", side_effect=lambda fn, *a, **kw: fn(*a, **kw)):
+            result = await cache_org_mappings_activity()
+
+        assert result["success"] is True
+        assert result["total_mappings"] == 2
+        assert "cache_reused" not in result
+
+        mock_store.assert_called_once()
+        stored_mappings = mock_store.call_args[0][0]
+        assert len(stored_mappings) == 2
+        assert stored_mappings[0]["posthog_org_id"] == "org-uuid-1"
+        assert stored_mappings[1]["posthog_org_id"] == "org-uuid-2"
+
+
+class TestUpdateSalesforceUsageActivity(TestCase):
+    @pytest.mark.asyncio
+    @patch(f"{WORKFLOW_MODULE}.Heartbeater")
+    @patch(f"{WORKFLOW_MODULE}.close_old_connections")
+    async def test_empty_updates_returns_zero(self, _mock_close, _mock_heartbeat):
+        result = await update_salesforce_usage_activity([])
+        assert result == 0
+
+    @pytest.mark.asyncio
+    @patch(f"{WORKFLOW_MODULE}.Heartbeater")
+    @patch(f"{WORKFLOW_MODULE}.get_salesforce_client")
+    @patch(f"{WORKFLOW_MODULE}.close_old_connections")
+    async def test_bulk_update_exception_returns_zero(self, _mock_close, mock_sf_client, _mock_heartbeat):
+        signals = UsageSignals(active_users_7d=100, sessions_7d=50)
+        updates = [
+            SalesforceUsageUpdate(salesforce_account_id="001ABC", signals=signals),
+            SalesforceUsageUpdate(salesforce_account_id="001DEF", signals=signals),
+        ]
+
+        mock_sf = MagicMock()
+        mock_sf.bulk.Account.update.side_effect = Exception("Salesforce API error")
+        mock_sf_client.return_value = mock_sf
+
+        result = await update_salesforce_usage_activity(updates)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    @patch(f"{WORKFLOW_MODULE}.Heartbeater")
+    @patch(f"{WORKFLOW_MODULE}.get_salesforce_client")
+    @patch(f"{WORKFLOW_MODULE}.close_old_connections")
+    async def test_partial_success_counts_correctly(self, _mock_close, mock_sf_client, _mock_heartbeat):
+        signals = UsageSignals(active_users_7d=100)
+        updates = [
+            SalesforceUsageUpdate(salesforce_account_id="001ABC", signals=signals),
+            SalesforceUsageUpdate(salesforce_account_id="001DEF", signals=signals),
+            SalesforceUsageUpdate(salesforce_account_id="001GHI", signals=signals),
+        ]
+
+        mock_sf = MagicMock()
+        mock_sf.bulk.Account.update.return_value = [
+            {"id": "001ABC", "success": True},
+            {"id": "001DEF", "success": False, "errors": ["Field not found"]},
+            {"id": "001GHI", "success": True},
+        ]
+        mock_sf_client.return_value = mock_sf
+
+        result = await update_salesforce_usage_activity(updates)
+        assert result == 2
+
+    @pytest.mark.asyncio
+    @patch(f"{WORKFLOW_MODULE}.Heartbeater")
+    @patch(f"{WORKFLOW_MODULE}.get_salesforce_client")
+    @patch(f"{WORKFLOW_MODULE}.close_old_connections")
+    async def test_all_success(self, _mock_close, mock_sf_client, _mock_heartbeat):
+        signals = UsageSignals(active_users_7d=100)
+        updates = [
+            SalesforceUsageUpdate(salesforce_account_id="001ABC", signals=signals),
+            SalesforceUsageUpdate(salesforce_account_id="001DEF", signals=signals),
+        ]
+
+        mock_sf = MagicMock()
+        mock_sf.bulk.Account.update.return_value = [
+            {"id": "001ABC", "success": True},
+            {"id": "001DEF", "success": True},
+        ]
+        mock_sf_client.return_value = mock_sf
+
+        result = await update_salesforce_usage_activity(updates)
+        assert result == 2

@@ -236,6 +236,8 @@ def get_teams_with_recordings_in_period(begin: datetime, end: datetime, team_ids
     """Get session recording counts per team for sessions that started within the period."""
     if not team_ids:
         return {}
+    if begin >= end:
+        return {}
 
     previous_begin = begin - (end - begin)
 
@@ -278,9 +280,9 @@ class _PeriodData:
 
 def _calc_eps_momentum(current: OrgAggregatedSignals, previous: OrgAggregatedSignals) -> float | None:
     """Calculate events-per-session momentum if both values are present."""
-    if current.events_per_session is not None and previous.events_per_session is not None:
-        return calc_momentum(current.events_per_session, previous.events_per_session)
-    return None
+    if current.events_per_session is None or previous.events_per_session is None:
+        return None
+    return calc_momentum(current.events_per_session, previous.events_per_session)
 
 
 def _get_products_with_recordings(products: list[str], team_ids: list[int], recordings: dict[int, int]) -> list[str]:
