@@ -16,8 +16,11 @@ logger = structlog.get_logger(__name__)
 
 CH_BILLING_SETTINGS = {
     "max_execution_time": 5 * 60,
-    # Allow spilling to disk if memory is exceeded during GROUP BY
+    # Allow spilling to disk if memory is exceeded during GROUP BY or ORDER BY
     "max_bytes_before_external_group_by": 50_000_000_000,  # 50GB
+    "max_bytes_before_external_sort": 50_000_000_000,  # 50GB
+    # Optimize aggregation when GROUP BY matches table's ORDER BY key (events table is ordered by team_id)
+    "optimize_aggregation_in_order": 1,
 }
 
 # Mapping of product attribute names to their output names
