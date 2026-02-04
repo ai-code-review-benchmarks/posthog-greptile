@@ -116,12 +116,14 @@ class HobbyTester:
         plugins service so that docker compose pull doesn't fail.
         """
         return (
-            'if curl -sf "https://hub.docker.com/v2/repositories/posthog/posthog-node/tags/$CURRENT_COMMIT" > /dev/null 2>&1; then '
-            '  echo "$LOG_PREFIX posthog-node:$CURRENT_COMMIT found on DockerHub"; '
+            "if curl -sf "
+            "https://hub.docker.com/v2/repositories/posthog/posthog-node/tags/$CURRENT_COMMIT "
+            "> /dev/null 2>&1; then "
+            "echo posthog-node image found on DockerHub; "
             "else "
-            '  echo "$LOG_PREFIX posthog-node:$CURRENT_COMMIT not found, using latest for plugins service"; '
-            "  sed -i "
-            '"s|\\${REGISTRY_URL}-node:\\${POSTHOG_APP_TAG}|posthog/posthog-node:latest|g" '
+            "echo posthog-node image not found, using latest for plugins service; "
+            "sed -i "
+            "'s|${REGISTRY_URL}-node:${POSTHOG_APP_TAG}|posthog/posthog-node:latest|g' "
             "posthog/docker-compose.hobby.yml; "
             "fi"
         )
