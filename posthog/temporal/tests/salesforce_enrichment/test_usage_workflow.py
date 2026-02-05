@@ -18,6 +18,11 @@ from posthog.temporal.salesforce_enrichment.usage_workflow import (
 from ee.billing.salesforce_enrichment.usage_signals import UsageSignals
 
 
+async def mock_to_thread(fn, *args, **kwargs):
+    """Mock asyncio.to_thread that returns an awaitable."""
+    return fn(*args, **kwargs)
+
+
 class TestSalesforceOrgMapping(TestCase):
     def test_create_mapping(self):
         mapping = SalesforceOrgMapping(
@@ -186,7 +191,7 @@ class TestCacheOrgMappingsActivity(TestCase):
         }
         mock_sf_client.return_value = mock_sf
 
-        with patch(f"{WORKFLOW_MODULE}.asyncio.to_thread", side_effect=lambda fn, *a, **kw: fn(*a, **kw)):
+        with patch(f"{WORKFLOW_MODULE}.asyncio.to_thread", side_effect=mock_to_thread):
             result = await cache_org_mappings_activity()
 
         assert result["success"] is True
