@@ -590,17 +590,18 @@ def update_flag_definitions_cache(team_or_id: Team | int, ttl: int | None = None
     """
     Update the flag definitions cache for a team with dual-write support.
 
+    Loads flags and cohorts once, then generates both with-cohorts and
+    without-cohorts responses to avoid duplicate database queries.
+
     Writes to both shared cache (Django reads) and dedicated cache (Rust service reads).
     The shared cache write is mandatory; dedicated cache write is best-effort.
-
-    This updates both cache variants (with and without cohorts).
 
     Args:
         team_or_id: Team object or team ID
         ttl: Optional custom TTL in seconds (defaults to FLAGS_CACHE_TTL)
 
     Returns:
-        True if both cache updates succeeded, False otherwise
+        True if cache update succeeded, False otherwise
     """
     # Resolve team if ID was passed
     if isinstance(team_or_id, int):
@@ -612,19 +613,21 @@ def update_flag_definitions_cache(team_or_id: Team | int, ttl: int | None = None
     else:
         team = team_or_id
 
+    logger.info(f"Syncing feature_flags cache for team {team.id}")
+
     timeout = ttl if ttl is not None else settings.FLAGS_CACHE_TTL
+    start_time = time.time()
+    success = False
 
-    success = True
+    try:
+        # Load both responses in a single optimized call (avoids duplicate DB queries)
+        with_cohorts_data, without_cohorts_data = _get_both_flags_responses_for_local_evaluation(team)
 
-    # Update both cache variants
-    for hypercache, include_cohorts in [
-        (flags_hypercache, True),
-        (flags_without_cohorts_hypercache, False),
-    ]:
-        try:
-            # Load data
-            data = _get_flags_response_for_local_evaluation(team, include_cohorts)
-
+        # Update both cache variants with pre-loaded data
+        for hypercache, data in [
+            (flags_hypercache, with_cohorts_data),
+            (flags_without_cohorts_hypercache, without_cohorts_data),
+        ]:
             # Write to shared cache via HyperCache (also writes to S3 and tracks expiry)
             hypercache.set_cache_value(team, data, ttl=timeout)
 
@@ -641,34 +644,6 @@ def update_flag_definitions_cache(team_or_id: Team | int, ttl: int | None = None
 
             _write_to_dedicated_cache(cache_key, json_data, etag_key, etag, timeout)
 
-        except Exception as e:
-            logger.exception(
-                "Failed to update flag definitions cache",
-                team_id=team.id,
-                include_cohorts=include_cohorts,
-                error=str(e),
-            )
-            capture_exception(e)
-            success = False
-
-    return success
-
-
-def update_flag_caches(team: Team):
-    """
-    Update both flag cache variants from shared data.
-
-    Loads flags and cohorts once, then generates both with-cohorts and
-    without-cohorts responses to avoid duplicate database queries.
-    """
-    logger.info(f"Syncing feature_flags cache for team {team.id}")
-
-    start_time = time.time()
-    success = False
-    try:
-        with_cohorts, without_cohorts = _get_both_flags_responses_for_local_evaluation(team)
-        flags_hypercache.set_cache_value(team, with_cohorts)
-        flags_without_cohorts_hypercache.set_cache_value(team, without_cohorts)
         success = True
     except Exception as e:
         capture_exception(e)
@@ -683,6 +658,12 @@ def update_flag_caches(team: Team):
         ).observe(duration)
         CACHE_SYNC_COUNTER.labels(result=result, namespace="feature_flags", value="flags_with_cohorts.json").inc()
         CACHE_SYNC_COUNTER.labels(result=result, namespace="feature_flags", value="flags_without_cohorts.json").inc()
+
+    return success
+
+
+# Backwards compatibility alias for callers using the old name
+update_flag_caches = update_flag_definitions_cache
 
 
 def clear_flag_definition_caches(team: Team, kinds: list[str] | None = None):
