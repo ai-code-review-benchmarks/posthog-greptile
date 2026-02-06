@@ -58,7 +58,7 @@ def _run_flag_definitions_verification() -> None:
     lock_key = f"posthog:hypercache_verification:{cache_type}:lock"
 
     # Attempt to acquire lock - cache.add returns False if key already exists
-    # Use dedicated timeout that matches the task's 4-hour time limit
+    # Use dedicated timeout that matches the task's 1-hour time limit
     if not django_cache.add(lock_key, "locked", timeout=FLAG_DEFINITIONS_LOCK_TIMEOUT_SECONDS):
         logger.info("Skipping cache verification - already running", cache_type=cache_type)
         return
