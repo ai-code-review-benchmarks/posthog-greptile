@@ -316,7 +316,7 @@ def _verify_and_fix_batch(
                 issue_type=issue_type,
                 cache_type=cache_type,
                 result=result,
-                verification=verification if status == "mismatch" else None,
+                verification=verification,
             )
 
 
@@ -415,7 +415,12 @@ def _fix_and_record(
     logger.info("Fixing cache entry", **log_kwargs)
 
     try:
-        success = config.update_fn(team)
+        # Use preloaded db_data if available to avoid redundant DB query
+        if verification and "db_data" in verification:
+            config.hypercache.set_cache_value(team, verification["db_data"])
+            success = True
+        else:
+            success = config.update_fn(team)
     except Exception as e:
         success = False
         logger.exception("Error fixing cache", team_id=team.id, issue_type=issue_type, error=str(e))

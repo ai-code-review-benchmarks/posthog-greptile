@@ -187,6 +187,52 @@ class TestFixAndRecord(BaseTest):
         assert result.cache_miss_fixed == 0
         assert result.fix_failed == 1
 
+    def test_uses_db_data_when_available(self):
+        """Test that when verification provides db_data, it's used directly instead of calling update_fn."""
+        mock_config = MagicMock()
+        mock_config.hypercache.set_cache_value.return_value = None
+        mock_config.update_fn.return_value = True
+
+        result = VerificationResult()
+        db_data = {"flags": [{"id": 1, "key": "test-flag"}]}
+        verification = {"status": "miss", "issue": "CACHE_MISS", "db_data": db_data}
+
+        _fix_and_record(
+            team=self.team,
+            config=mock_config,
+            issue_type="cache_miss",
+            cache_type="test_cache",
+            result=result,
+            verification=verification,
+        )
+
+        # Should use set_cache_value with db_data instead of update_fn
+        mock_config.hypercache.set_cache_value.assert_called_once_with(self.team, db_data)
+        mock_config.update_fn.assert_not_called()
+        assert result.cache_miss_fixed == 1
+        assert self.team.id in result.fixed_team_ids
+
+    def test_falls_back_to_update_fn_without_db_data(self):
+        """Test that when db_data is not available, update_fn is called as before."""
+        mock_config = MagicMock()
+        mock_config.update_fn.return_value = True
+
+        result = VerificationResult()
+        verification = {"status": "miss", "issue": "CACHE_MISS"}
+
+        _fix_and_record(
+            team=self.team,
+            config=mock_config,
+            issue_type="cache_miss",
+            cache_type="test_cache",
+            result=result,
+            verification=verification,
+        )
+
+        mock_config.update_fn.assert_called_once_with(self.team)
+        assert result.cache_miss_fixed == 1
+        assert self.team.id in result.fixed_team_ids
+
 
 @override_settings(FLAGS_REDIS_URL="redis://test")
 class TestVerifyAndFixBatch(BaseTest):
