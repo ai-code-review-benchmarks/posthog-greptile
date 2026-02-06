@@ -106,37 +106,17 @@ class TestVerifyAndFixTeamMetadataCacheTaskDisabled(TestCase):
 
 @override_settings(FLAGS_REDIS_URL="redis://test")
 class TestVerifyAndFixFlagDefinitionsCacheTask(TestCase):
-    """Tests for the flag definitions cache verification task (with dual variants)."""
+    """Tests for the flag definitions cache verification task."""
 
     @patch("posthog.tasks.hypercache_verification._run_verification_for_cache")
-    def test_verifies_both_cache_variants(self, mock_run_verification: MagicMock) -> None:
+    def test_verifies_flag_definitions_cache(self, mock_run_verification: MagicMock) -> None:
         mock_run_verification.return_value = MagicMock()
 
         verify_and_fix_flag_definitions_cache_task()
 
-        # Called twice - once for each variant
-        assert mock_run_verification.call_count == 2
-
-        # Verify both variants are processed
-        cache_types = [call[1]["cache_type"] for call in mock_run_verification.call_args_list]
-        assert "flag_definitions_with_cohorts" in cache_types
-        assert "flag_definitions_without_cohorts" in cache_types
-
-    @patch("posthog.tasks.hypercache_verification.capture_exception")
-    @patch("posthog.tasks.hypercache_verification._run_verification_for_cache")
-    def test_captures_exception_but_continues_on_variant_failure(
-        self, mock_run_verification: MagicMock, mock_capture: MagicMock
-    ) -> None:
-        """If a variant fails, capture_exception is called but we continue to the next variant."""
-        error = Exception("variant verification failed")
-        mock_run_verification.side_effect = error
-
-        # Should not raise - errors are captured and logged, but we continue
-        verify_and_fix_flag_definitions_cache_task()
-
-        # Both variants failed, so capture_exception should be called twice
-        assert mock_capture.call_count == 2
-        mock_capture.assert_any_call(error)
+        # Only verifies with-cohorts variant (fixing it fixes both variants)
+        mock_run_verification.assert_called_once()
+        assert mock_run_verification.call_args[1]["cache_type"] == "flag_definitions"
 
     @patch("posthog.tasks.hypercache_verification._run_verification_for_cache")
     def test_does_not_raise_when_succeeds(self, mock_run_verification: MagicMock) -> None:
@@ -145,8 +125,7 @@ class TestVerifyAndFixFlagDefinitionsCacheTask(TestCase):
         # Should not raise
         verify_and_fix_flag_definitions_cache_task()
 
-        # Called twice - once for each variant (with_cohorts and without_cohorts)
-        assert mock_run_verification.call_count == 2
+        mock_run_verification.assert_called_once()
 
 
 @override_settings(FLAGS_REDIS_URL=None)

@@ -10,7 +10,6 @@ Provides separate tasks for verifying and fixing each HyperCache-backed cache
 """
 
 import time
-from collections.abc import Callable
 from typing import Literal
 
 from django.conf import settings
@@ -22,7 +21,6 @@ from celery import shared_task
 from posthog.exceptions_capture import capture_exception
 from posthog.models.feature_flag.local_evaluation import (
     FLAG_DEFINITIONS_HYPERCACHE_MANAGEMENT_CONFIG,
-    FLAG_DEFINITIONS_NO_COHORTS_HYPERCACHE_MANAGEMENT_CONFIG,
     verify_team_flag_definitions,
 )
 from posthog.models.team.team import Team
@@ -47,13 +45,18 @@ FLAG_DEFINITIONS_LOCK_TIMEOUT_SECONDS = 60 * 60  # 1 hour
 
 def _run_flag_definitions_verification() -> None:
     """
-    Run verification for both flag definitions cache variants.
+    Run verification for the flag definitions cache.
 
     Handles:
+    - Early exit if FLAGS_REDIS_URL not configured
     - Distributed lock to prevent concurrent executions
-    - Verifying both with-cohorts and without-cohorts variants
     """
     cache_type = "flag_definitions"
+
+    # Check Redis URL first to avoid holding a lock when no work will be done
+    if not settings.FLAGS_REDIS_URL:
+        logger.info("Flags Redis URL not set, skipping cache verification", cache_type=cache_type)
+        return
 
     lock_key = f"posthog:hypercache_verification:{cache_type}:lock"
 
@@ -68,49 +71,29 @@ def _run_flag_definitions_verification() -> None:
 
         start_time = time.time()
 
-        # Verify both cache variants
-        configs = [
-            (FLAG_DEFINITIONS_HYPERCACHE_MANAGEMENT_CONFIG, "with_cohorts", True),
-            (FLAG_DEFINITIONS_NO_COHORTS_HYPERCACHE_MANAGEMENT_CONFIG, "without_cohorts", False),
-        ]
+        # Only verify the with-cohorts variant. Both variants are always updated together
+        # by update_flag_definitions_cache(), so if one is stale, both are. Fixing one
+        # fixes both, so verifying both would just duplicate work.
+        def verify_fn(
+            team: Team,
+            db_batch_data: dict | None = None,
+            cache_batch_data: dict | None = None,
+            verbose: bool = False,
+        ) -> dict:
+            return verify_team_flag_definitions(
+                team,
+                db_batch_data=db_batch_data,
+                cache_batch_data=cache_batch_data,
+                include_cohorts=True,
+                verbose=verbose,
+            )
 
-        for config, variant_name, include_cohorts in configs:
-            try:
-                # Create a variant-specific verify function
-                def make_verify_fn(
-                    inc_cohorts: bool,
-                ) -> Callable[[Team, dict | None, dict | None], dict]:
-                    def verify_fn(
-                        team: Team,
-                        db_batch_data: dict | None = None,
-                        cache_batch_data: dict | None = None,
-                        verbose: bool = False,
-                    ) -> dict:
-                        return verify_team_flag_definitions(
-                            team,
-                            db_batch_data=db_batch_data,
-                            cache_batch_data=cache_batch_data,
-                            include_cohorts=inc_cohorts,
-                            verbose=verbose,
-                        )
-
-                    return verify_fn
-
-                _run_verification_for_cache(
-                    config=config,
-                    verify_team_fn=make_verify_fn(include_cohorts),
-                    cache_type=f"{cache_type}_{variant_name}",
-                    chunk_size=settings.FLAGS_CACHE_VERIFICATION_CHUNK_SIZE,
-                )
-            except Exception as e:
-                logger.exception(
-                    "Failed cache verification for variant",
-                    cache_type=cache_type,
-                    variant=variant_name,
-                    error=str(e),
-                )
-                capture_exception(e)
-                # Continue to next variant
+        _run_verification_for_cache(
+            config=FLAG_DEFINITIONS_HYPERCACHE_MANAGEMENT_CONFIG,
+            verify_team_fn=verify_fn,
+            cache_type=cache_type,
+            chunk_size=settings.FLAGS_CACHE_VERIFICATION_CHUNK_SIZE,
+        )
 
         duration = time.time() - start_time
         logger.info("Completed cache verification", cache_type=cache_type, duration_seconds=duration)
@@ -222,11 +205,11 @@ def verify_and_fix_team_metadata_cache_task() -> None:
 )
 def verify_and_fix_flag_definitions_cache_task() -> None:
     """
-    Periodic task to verify the flag definitions HyperCaches and fix issues.
+    Periodic task to verify the flag definitions HyperCache and fix issues.
 
-    Runs hourly at minute 50. Verifies all teams' flag definitions caches
-    (both with-cohorts and without-cohorts variants), automatically fixing any
-    cache misses, mismatches, or expiry tracking issues.
+    Runs hourly at minute 50. Verifies the with-cohorts variant (fixing it
+    automatically fixes both variants since update_flag_definitions_cache
+    updates both). Fixes cache misses, mismatches, or expiry tracking issues.
 
     Uses a distributed lock to skip execution if a previous run is still in progress.
 
