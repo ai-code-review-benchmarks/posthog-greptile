@@ -2,12 +2,10 @@ from posthog.test.base import BaseTest
 from unittest.mock import patch
 
 from django.conf import settings
-from django.core.cache import caches
 from django.test import override_settings
 
 from parameterized import parameterized
 
-from posthog.caching.flags_redis_cache import FLAGS_DEDICATED_CACHE_ALIAS
 from posthog.models.cohort.cohort import Cohort
 from posthog.models.feature_flag.feature_flag import FeatureFlag, FeatureFlagEvaluationTag
 from posthog.models.feature_flag.local_evaluation import (
@@ -926,7 +924,7 @@ class TestGetBothFlagsResponsesForLocalEvaluation(BaseTest):
 
 @override_settings(FLAGS_REDIS_URL="redis://test")
 class TestFlagDefinitionsCache(BaseTest):
-    """Tests for flag definitions HyperCache operations with dual-write support."""
+    """Tests for flag definitions HyperCache operations."""
 
     def setUp(self):
         super().setUp()
@@ -1031,96 +1029,6 @@ class TestFlagDefinitionsCache(BaseTest):
         assert config2.cache_name == "flag_definitions_no_cohorts"
         assert config2.hypercache == flags_without_cohorts_hypercache
         assert config2.update_fn == update_flag_definitions_cache
-
-
-@override_settings(
-    FLAGS_REDIS_URL="redis://test",
-    CACHES={
-        **settings.CACHES,
-        FLAGS_DEDICATED_CACHE_ALIAS: {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-            "LOCATION": "flags-dedicated-dual-write-test",
-        },
-    },
-)
-class TestFlagDefinitionsDualWrite(BaseTest):
-    """Tests for flag definitions dual-write to dedicated cache."""
-
-    def setUp(self):
-        super().setUp()
-        clear_flag_definition_caches(self.team, kinds=["redis", "s3"])
-        # Clear dedicated cache
-        if FLAGS_DEDICATED_CACHE_ALIAS in settings.CACHES:
-            caches[FLAGS_DEDICATED_CACHE_ALIAS].clear()
-
-    def test_update_writes_to_dedicated_cache(self):
-        """Test that update_flag_definitions_cache writes to dedicated cache."""
-        FeatureFlag.objects.create(
-            team=self.team,
-            key="test-flag",
-            created_by=self.user,
-            filters={"groups": [{"properties": [], "rollout_percentage": 100}]},
-        )
-
-        update_flag_definitions_cache(self.team)
-
-        # Verify data in dedicated cache
-        dedicated_cache = caches[FLAGS_DEDICATED_CACHE_ALIAS]
-        for hypercache in [flags_hypercache, flags_without_cohorts_hypercache]:
-            cache_key = hypercache.get_cache_key(self.team)
-            cached_data = dedicated_cache.get(cache_key)
-            assert cached_data is not None
-            # Data is stored as JSON string in dedicated cache
-            import json
-
-            parsed = json.loads(cached_data)
-            assert len(parsed["flags"]) == 1
-            assert parsed["flags"][0]["key"] == "test-flag"
-
-    def test_update_writes_etag_to_dedicated_cache(self):
-        """Test that ETag is written to dedicated cache when enable_etag=True."""
-        FeatureFlag.objects.create(
-            team=self.team,
-            key="test-flag",
-            created_by=self.user,
-            filters={"groups": [{"properties": [], "rollout_percentage": 100}]},
-        )
-
-        update_flag_definitions_cache(self.team)
-
-        # Verify ETag in dedicated cache
-        dedicated_cache = caches[FLAGS_DEDICATED_CACHE_ALIAS]
-        for hypercache in [flags_hypercache, flags_without_cohorts_hypercache]:
-            etag_key = hypercache.get_etag_key(self.team)
-            etag = dedicated_cache.get(etag_key)
-            # ETag should be a hash string
-            assert etag is not None
-            assert len(etag) > 0
-
-    def test_dedicated_cache_failure_does_not_abort_update(self):
-        """Test that dedicated cache write failure doesn't prevent shared cache update."""
-        FeatureFlag.objects.create(
-            team=self.team,
-            key="test-flag",
-            created_by=self.user,
-            filters={"groups": [{"properties": [], "rollout_percentage": 100}]},
-        )
-
-        # Mock dedicated cache to raise exception
-        with patch.object(caches[FLAGS_DEDICATED_CACHE_ALIAS], "set", side_effect=Exception("Cache write failed")):
-            with patch.object(
-                caches[FLAGS_DEDICATED_CACHE_ALIAS], "set_many", side_effect=Exception("Cache write failed")
-            ):
-                result = update_flag_definitions_cache(self.team)
-
-        # Update should still succeed (shared cache was written)
-        assert result is True
-
-        # Shared cache should have the data
-        data, source = flags_hypercache.get_from_cache_with_source(self.team)
-        assert source == "redis"
-        assert data is not None
-        assert len(data["flags"]) == 1
 
 
 @override_settings(FLAGS_REDIS_URL="redis://test")

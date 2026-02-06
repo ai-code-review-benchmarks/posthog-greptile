@@ -3,9 +3,6 @@ Management command to warm the flag definitions cache.
 
 This warms both cache variants (with and without cohorts) used for SDK local evaluation.
 
-IMPORTANT: This command warms caches with dual-write support - data is written to both
-the shared cache (Django reads) and the dedicated cache (Rust service reads).
-
 Usage:
     # Initial cache warm (preserves existing caches)
     python manage.py warm_flag_definitions_cache

@@ -342,8 +342,8 @@ class TestVerifyAndFixBatch(BaseTest):
             ("cache_mismatch", {"status": "mismatch", "issue": "DATA_MISMATCH"}, {}, "cache_mismatch_fixed"),
         ]
     )
-    def test_fix_uses_update_fn_for_dual_write(self, _name, verification_result, expiry_status, result_attr):
-        """Test that fixes use update_fn to ensure dual-write to both shared and dedicated caches."""
+    def test_fix_uses_update_fn(self, _name, verification_result, expiry_status, result_attr):
+        """Test that fixes use update_fn to refresh the cache."""
         mock_config = MagicMock()
         mock_db_batch_data: dict = {self.team.id: {"flags": ["flag1", "flag2"]}}
         mock_config.hypercache.batch_load_fn.return_value = mock_db_batch_data
@@ -365,12 +365,11 @@ class TestVerifyAndFixBatch(BaseTest):
                 result=result,
             )
 
-        # Should call update_fn for dual-write (writes to both shared and dedicated caches)
         mock_config.update_fn.assert_called_once_with(self.team)
         assert getattr(result, result_attr) == 1
 
-    def test_expiry_missing_fix_uses_update_fn_for_dual_write(self):
-        """Test that expiry_missing fixes use update_fn to ensure dual-write to both caches."""
+    def test_expiry_missing_fix_uses_update_fn(self):
+        """Test that expiry_missing fixes use update_fn to refresh the cache."""
         mock_config = MagicMock()
         mock_db_batch_data: dict = {self.team.id: {"flags": ["flag1", "flag2"]}}
         mock_config.hypercache.batch_load_fn.return_value = mock_db_batch_data
@@ -397,7 +396,6 @@ class TestVerifyAndFixBatch(BaseTest):
                 result=result,
             )
 
-        # Should call update_fn for dual-write (writes to both shared and dedicated caches)
         mock_config.update_fn.assert_called_once_with(self.team)
         assert result.expiry_missing_fixed == 1
 
@@ -667,7 +665,7 @@ class TestVerifyEmptyCacheTeam(BaseTest):
     """Test _verify_empty_cache_team fast-path verification."""
 
     def test_cache_miss_triggers_fix(self):
-        """Teams with no cache entry should be fixed via update_fn for dual-write."""
+        """Teams with no cache entry should be fixed via update_fn."""
         mock_config = MagicMock()
         mock_config.empty_cache_value = {"flags": []}
         mock_config.update_fn.return_value = True
@@ -686,7 +684,6 @@ class TestVerifyEmptyCacheTeam(BaseTest):
             team_ids_to_skip_fix=set(),
         )
 
-        # Should trigger cache_miss fix via update_fn (dual-write to both caches)
         assert result.cache_miss_fixed == 1
         mock_config.update_fn.assert_called_once_with(self.team)
 
@@ -731,7 +728,6 @@ class TestVerifyEmptyCacheTeam(BaseTest):
             team_ids_to_skip_fix=set(),
         )
 
-        # Should trigger cache_mismatch fix via update_fn (dual-write to both caches)
         assert result.cache_mismatch_fixed == 1
         mock_config.update_fn.assert_called_once_with(self.team)
 

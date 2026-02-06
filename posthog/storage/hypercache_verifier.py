@@ -415,10 +415,6 @@ def _fix_and_record(
     logger.info("Fixing cache entry", **log_kwargs)
 
     try:
-        # Always use update_fn to ensure dual-write to both shared and dedicated caches.
-        # For flag definitions, this writes to both the shared cache (Django reads) and
-        # the dedicated cache (Rust service reads). The db_data optimization was removed
-        # because it only wrote to the shared cache, leaving the dedicated cache stale.
         success = config.update_fn(team)
     except Exception as e:
         success = False

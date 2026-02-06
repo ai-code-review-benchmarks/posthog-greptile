@@ -14,24 +14,17 @@ Cache Key Pattern:
 - Uses team_id as the key (ID-based cache)
 - Stored in both Redis and S3 via HyperCache
 
-Dual-Write Behavior:
-- Writes to both shared cache (Django reads) and dedicated cache (Rust service reads)
-- Django reads from shared cache only
-- Dedicated cache writes are best-effort (failures logged but don't abort operation)
-
 Configuration:
 - Redis TTL: 7 days (configurable via FLAGS_CACHE_TTL env var)
 - Miss TTL: 1 day (configurable via FLAGS_CACHE_MISS_TTL env var)
 """
 
-import json
 import time
 from collections import defaultdict
 from collections.abc import Generator
 from typing import Any, Union, cast
 
 from django.conf import settings
-from django.core.cache import caches
 from django.db import transaction
 from django.db.models import Q
 from django.db.models.signals import post_delete, post_save
@@ -40,7 +33,6 @@ from django.dispatch import receiver
 import structlog
 from posthoganalytics import capture_exception
 
-from posthog.caching.flags_redis_cache import FLAGS_DEDICATED_CACHE_ALIAS
 from posthog.models.cohort.cohort import Cohort, CohortOrEmpty
 from posthog.models.feature_flag import FeatureFlag
 from posthog.models.feature_flag.feature_flag import FeatureFlagEvaluationTag
@@ -517,8 +509,6 @@ def _get_flags_response_for_local_evaluation_batch(
 
 
 # HyperCache instances for flag definitions
-# Note: No cache_alias - reads from shared cache (Django reads from shared, Rust service reads from dedicated)
-# Dual-write to dedicated cache is handled in update_flag_definitions_cache()
 flags_hypercache = HyperCache(
     namespace="feature_flags",
     value="flags_with_cohorts.json",
@@ -564,48 +554,12 @@ def get_flags_response_if_none_match(
     return hypercache.get_if_none_match(team, client_etag)
 
 
-def _write_to_dedicated_cache(cache_key: str, json_data: str, etag_key: str | None, etag: str | None, timeout: int):
-    """
-    Write flag definitions to the dedicated cache (best-effort).
-
-    This is called after writing to the shared cache to ensure the Rust service
-    also has access to the data.
-
-    Args:
-        cache_key: The cache key to write to
-        json_data: JSON-serialized data to write
-        etag_key: Optional ETag key for HTTP 304 support
-        etag: Optional ETag value
-        timeout: Cache TTL in seconds
-    """
-    if FLAGS_DEDICATED_CACHE_ALIAS not in settings.CACHES:
-        return
-
-    try:
-        dedicated_cache = caches[FLAGS_DEDICATED_CACHE_ALIAS]
-        if etag_key and etag:
-            # Write data and ETag together for atomicity
-            dedicated_cache.set_many({cache_key: json_data, etag_key: etag}, timeout=timeout)
-        else:
-            dedicated_cache.set(cache_key, json_data, timeout=timeout)
-    except Exception as e:
-        logger.warning(
-            "Dedicated cache write failed for flag definitions",
-            extra={"cache_key": cache_key},
-            exc_info=True,
-        )
-        capture_exception(e)
-
-
 def update_flag_definitions_cache(team_or_id: Team | int, ttl: int | None = None) -> bool:
     """
-    Update the flag definitions cache for a team with dual-write support.
+    Update the flag definitions cache for a team.
 
     Loads flags and cohorts once, then generates both with-cohorts and
     without-cohorts responses to avoid duplicate database queries.
-
-    Writes to both shared cache (Django reads) and dedicated cache (Rust service reads).
-    The shared cache write is mandatory; dedicated cache write is best-effort.
 
     Args:
         team_or_id: Team object or team ID
@@ -642,19 +596,6 @@ def update_flag_definitions_cache(team_or_id: Team | int, ttl: int | None = None
             # Write to shared cache via HyperCache (also writes to S3 and tracks expiry)
             hypercache.set_cache_value(team, data, ttl=timeout)
 
-            # Dual-write to dedicated cache
-            cache_key = hypercache.get_cache_key(team)
-            json_data = json.dumps(data, sort_keys=True)
-
-            # Compute ETag if enabled
-            etag_key = None
-            etag = None
-            if hypercache.enable_etag:
-                etag_key = hypercache.get_etag_key(team)
-                etag = hypercache._compute_etag(json_data)
-
-            _write_to_dedicated_cache(cache_key, json_data, etag_key, etag, timeout)
-
         success = True
     except Exception as e:
         capture_exception(e)
@@ -681,7 +622,7 @@ def clear_flag_definition_caches(team: Team, kinds: list[str] | None = None):
     """
     Clear the flag definitions cache for a team.
 
-    Clears from both shared and dedicated caches, and removes from expiry tracking.
+    Clears from shared cache and removes from expiry tracking.
 
     Args:
         team: Team object
@@ -692,22 +633,6 @@ def clear_flag_definition_caches(team: Team, kinds: list[str] | None = None):
     # Clear from shared cache (and S3 if requested)
     flags_hypercache.clear_cache(team, kinds=kinds)
     flags_without_cohorts_hypercache.clear_cache(team, kinds=kinds)
-
-    # Clear from dedicated cache
-    if FLAGS_DEDICATED_CACHE_ALIAS in settings.CACHES:
-        try:
-            dedicated_cache = caches[FLAGS_DEDICATED_CACHE_ALIAS]
-            for hypercache in [flags_hypercache, flags_without_cohorts_hypercache]:
-                cache_key = hypercache.get_cache_key(team)
-                etag_key = hypercache.get_etag_key(team)
-                dedicated_cache.delete(cache_key)
-                dedicated_cache.delete(etag_key)
-        except Exception as e:
-            logger.warning(
-                "Failed to clear dedicated cache for flag definitions",
-                team_id=team.id,
-                error=str(e),
-            )
 
     # Remove from expiry tracking sorted sets
     try:
@@ -728,7 +653,7 @@ def clear_flag_caches(team: Team, kinds: list[str] | None = None):
     Clear the flag definitions cache for a team.
 
     Delegates to clear_flag_definition_caches for proper cleanup including
-    dedicated cache and expiry tracking.
+    expiry tracking.
     """
     clear_flag_definition_caches(team, kinds=kinds)
 
