@@ -126,12 +126,3 @@ class TestVerifyAndFixFlagDefinitionsCacheTask(TestCase):
         verify_and_fix_flag_definitions_cache_task()
 
         mock_run_verification.assert_called_once()
-
-
-@override_settings(FLAGS_REDIS_URL=None)
-class TestVerifyAndFixFlagDefinitionsCacheTaskDisabled(TestCase):
-    @patch("posthog.tasks.hypercache_verification._run_verification_for_cache")
-    def test_skips_verification_when_no_redis_url(self, mock_run_verification: MagicMock) -> None:
-        verify_and_fix_flag_definitions_cache_task()
-
-        mock_run_verification.assert_not_called()

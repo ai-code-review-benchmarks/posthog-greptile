@@ -48,15 +48,13 @@ def _run_flag_definitions_verification() -> None:
     Run verification for the flag definitions cache.
 
     Handles:
-    - Early exit if FLAGS_REDIS_URL not configured
     - Distributed lock to prevent concurrent executions
+
+    Note: Unlike the flags cache (which uses FLAGS_REDIS_URL), the flag definitions
+    cache uses the default cache backend (REDIS_URL). No special guard needed since
+    Django's default cache is always available.
     """
     cache_type = "flag_definitions"
-
-    # Check Redis URL first to avoid holding a lock when no work will be done
-    if not settings.FLAGS_REDIS_URL:
-        logger.info("Flags Redis URL not set, skipping cache verification", cache_type=cache_type)
-        return
 
     lock_key = f"posthog:hypercache_verification:{cache_type}:lock"
 
