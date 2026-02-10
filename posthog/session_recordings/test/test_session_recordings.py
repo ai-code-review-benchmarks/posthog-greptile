@@ -1945,7 +1945,7 @@ class TestSessionRecordings(APIBaseTest, ClickhouseTestMixin, QueryMatchingTest)
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
         mock_delete_via_recording_api.assert_called_once_with(session_id)
-        assert not SessionRecording.objects.filter(team=self.team, session_id=session_id, deleted=True).exists()
+        assert SessionRecording.objects.filter(team=self.team, session_id=session_id, deleted=True).exists()
 
     @patch(
         "posthog.session_recordings.session_recording_api.SessionRecordingViewSet._should_use_recording_api",
@@ -1986,7 +1986,7 @@ class TestSessionRecordings(APIBaseTest, ClickhouseTestMixin, QueryMatchingTest)
             mock_delete_via_recording_api.assert_any_call(session_id)
 
         for session_id in session_ids:
-            assert not SessionRecording.objects.filter(team=self.team, session_id=session_id, deleted=True).exists()
+            assert SessionRecording.objects.filter(team=self.team, session_id=session_id, deleted=True).exists()
 
     @patch(
         "posthog.session_recordings.session_recording_api.SessionRecordingViewSet._should_use_recording_api",
@@ -2020,5 +2020,5 @@ class TestSessionRecordings(APIBaseTest, ClickhouseTestMixin, QueryMatchingTest)
         response_data = response.json()
 
         assert response_data["success"]
-        assert response_data["deleted_count"] == 2
+        assert response_data["deleted_count"] == 3
         assert response_data["total_requested"] == 3
