@@ -1,0 +1,86 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}
+{{ block.super }}
+<link rel="stylesheet" href="{% static 'admin/css/changelists.css' %}" />
+<link rel="stylesheet" href="{% static 'admin/css/forms.css' %}" />
+<meta http-equiv="refresh" content="30">
+{% endblock %}
+
+{% if not is_popup %}
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+    &rsaquo; TopHog Dashboard
+</div>
+{% endblock %}
+{% endif %}
+
+{% block content %}
+<div id="content-main">
+    <div id="changelist-filter" style="margin-bottom: 20px; padding: 10px;">
+        <label for="pipeline">Pipeline:</label>
+        <select name="pipeline" id="pipeline">
+            <option value="">All</option>
+            {% for p in pipelines %}
+            <option value="{{ p }}" {% if p == selected_pipeline %}selected{% endif %}>{{ p }}</option>
+            {% endfor %}
+        </select>
+        <label for="lane" style="margin-left: 15px;">Lane:</label>
+        <select name="lane" id="lane">
+            <option value="">All</option>
+            {% for l in lanes %}
+            <option value="{{ l }}" {% if l == selected_lane %}selected{% endif %}>{{ l }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <script>
+    (function() {
+        function navigate() {
+            var pipeline = document.getElementById('pipeline').value;
+            var lane = document.getElementById('lane').value;
+            var params = new URLSearchParams();
+            if (pipeline) params.set('pipeline', pipeline);
+            if (lane) params.set('lane', lane);
+            var qs = params.toString();
+            window.location.href = window.location.pathname + (qs ? '?' + qs : '');
+        }
+        document.getElementById('pipeline').addEventListener('change', navigate);
+        document.getElementById('lane').addEventListener('change', navigate);
+    })();
+    </script>
+
+    {% if metrics %}
+        {% for metric_name, entries in metrics.items %}
+        <div class="module" style="margin-bottom: 20px;">
+            <table style="width: 100%;">
+                <caption>{{ metric_name }}</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Rank</th>
+                        <th scope="col">Key</th>
+                        <th scope="col">Value</th>
+                        <th scope="col">Pipeline</th>
+                        <th scope="col">Lane</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in entries %}
+                    <tr>
+                        <td>{{ forloop.counter }}</td>
+                        <td>{{ entry.key }}</td>
+                        <td>{{ entry.value }}</td>
+                        <td>{{ entry.pipeline }}</td>
+                        <td>{{ entry.lane }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p>No data in the last 5 minutes.</p>
+    {% endif %}
+</div>
+{% endblock %}
