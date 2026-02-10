@@ -14,6 +14,7 @@ import { createEventPipelineRunnerV1Step } from '../event-processing/event-pipel
 import { createExtractHeatmapDataStep } from '../event-processing/extract-heatmap-data-step'
 import { createNormalizeProcessPersonFlagStep } from '../event-processing/normalize-process-person-flag-step'
 import { PipelineBuilder, StartPipelineBuilder } from '../pipelines/builders/pipeline-builders'
+import { TopHogMetricType } from '../tophog/tophog'
 
 export interface EventSubpipelineInput {
     message: Message
@@ -68,12 +69,13 @@ export function createEventSubpipeline<TInput extends EventSubpipelineInput, TCo
                 groupId,
             }),
             {
-                topHog: {
-                    keyExtractor: (input) => String(input.eventToEmit.team_id),
-                    metric: 'events',
-                    trackCount: true,
-                    trackTime: false,
-                },
+                topHog: [
+                    {
+                        key: (input) => String(input.eventToEmit.team_id),
+                        type: TopHogMetricType.Count,
+                        name: 'emitted_events',
+                    },
+                ],
             }
         )
 }
