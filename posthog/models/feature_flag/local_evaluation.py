@@ -489,7 +489,7 @@ def _get_cohort_with_fallback(
     return seen_cohorts_cache[cohort_id]
 
 
-def _get_base_flags_queryset(team: Team) -> "QuerySet[FeatureFlag]":
+def _get_base_flags_queryset(team: Team) -> QuerySet[FeatureFlag]:
     """
     Return the base queryset for feature flags, excluding survey-linked flags
     and encrypted remote configuration flags.
