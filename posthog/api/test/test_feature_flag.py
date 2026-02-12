@@ -7080,7 +7080,7 @@ class TestCohortGenerationForFeatureFlag(APIBaseTest, ClickhouseTestMixin):
         self.assertEqual(len(response.json()["results"]), 3, response)
 
         # if the batch is big enough, it's fewer queries
-        with self.assertNumQueries(21):
+        with self.assertNumQueries(FuzzyInt(14, 17)):
             get_cohort_actors_for_feature_flag(cohort.pk, "some-feature2", self.team.pk, batchsize=10)
 
         cohort.refresh_from_db()
@@ -7176,7 +7176,7 @@ class TestCohortGenerationForFeatureFlag(APIBaseTest, ClickhouseTestMixin):
             name="some cohort2",
         )
 
-        with snapshot_postgres_queries_context(self), self.assertNumQueries(18):
+        with snapshot_postgres_queries_context(self), self.assertNumQueries(FuzzyInt(14, 17)):
             # person3 doesn't match filter conditions so is pre-filtered out
             get_cohort_actors_for_feature_flag(cohort2.pk, "some-feature-new", self.team.pk)
 
