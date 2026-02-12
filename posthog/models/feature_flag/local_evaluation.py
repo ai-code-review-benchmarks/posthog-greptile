@@ -679,6 +679,12 @@ def _get_both_flags_responses_for_local_evaluation(team: Team) -> tuple[dict[str
     }
 
     # Phase 3: Stream through flags to serialize (second pass with full objects)
+    #
+    # Note: Per-flag processing appends to flags_with_cohorts_data before completing
+    # flags_without_cohorts_data serialization. An exception mid-iteration could leave
+    # the two lists out of sync. This is acceptable because flags_without_cohorts is
+    # deprecated with minimal traffic (<5% of requests). Atomic per-flag commits would
+    # add complexity without meaningful benefit.
     cohorts_dict: dict[str, Any] = {}
     flags_with_cohorts_data: list[dict[str, Any]] = []
     flags_without_cohorts_data: list[dict[str, Any]] = []
