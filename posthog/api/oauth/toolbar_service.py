@@ -22,17 +22,21 @@ from django.core.cache import cache
 from django.db import transaction
 
 import requests
+import structlog
 
 from posthog.api.utils import unparsed_hostname_in_allowed_url_list
 from posthog.models import Team, User
 from posthog.models.oauth import OAuthApplication, is_loopback_host
 from posthog.models.organization import Organization
 
+logger = structlog.get_logger(__name__)
+
 STATE_SIGNER_SALT = "toolbar-oauth-state-v1"
 STATE_VERSION = 1
 STATE_CACHE_PREFIX = "toolbar_oauth_state"
 STATE_USED_CACHE_PREFIX = "toolbar_oauth_state_used"
 CALLBACK_PATH = "/toolbar_oauth/callback"
+MAX_REDIRECT_URIS = 20
 
 
 class ToolbarOAuthError(Exception):
@@ -108,7 +112,7 @@ def get_or_create_toolbar_oauth_application(base_url: str, user: User) -> OAuthA
     from multiple hosts.
     """
     base_url = normalize_base_url_for_oauth(base_url)
-    redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
+    redirect_uri = f"{base_url}{CALLBACK_PATH}"
     app_name = settings.TOOLBAR_OAUTH_APPLICATION_NAME
 
     if user.organization is None:
@@ -130,15 +134,26 @@ def get_or_create_toolbar_oauth_application(base_url: str, user: User) -> OAuthA
             # Keep redirect URIs in sync for this organization deployment URLs.
             existing_redirect_uris = _split_redirect_uris(existing.redirect_uris)
             if redirect_uri not in existing_redirect_uris:
+                if len(existing_redirect_uris) >= MAX_REDIRECT_URIS:
+                    raise ToolbarOAuthError(
+                        "redirect_uri_limit",
+                        "Too many redirect URIs registered for this organization",
+                        400,
+                    )
                 # DOT stores redirect URIs as a single space-delimited string.
                 # We append instead of replacing so one org can authorize toolbar
                 # from multiple PostHog hosts (e.g. US/EU or prod/staging).
                 existing.redirect_uris = " ".join([*existing_redirect_uris, redirect_uri])
                 existing.save(update_fields=["redirect_uris"])
+                logger.info(
+                    "toolbar_oauth_redirect_uri_appended",
+                    organization_id=user.organization_id,
+                    redirect_uri=redirect_uri,
+                )
             return existing
 
         # NOTE: Keep as non-first-party for now to avoid potential security issues.
-        return OAuthApplication.objects.create(
+        app = OAuthApplication.objects.create(
             name=app_name,
             user=user,
             organization=user.organization,
@@ -149,6 +164,12 @@ def get_or_create_toolbar_oauth_application(base_url: str, user: User) -> OAuthA
             skip_authorization=False,
             is_first_party=False,
         )
+        logger.info(
+            "toolbar_oauth_application_created",
+            organization_id=user.organization_id,
+            redirect_uri=redirect_uri,
+        )
+        return app
 
 
 def build_toolbar_oauth_state(state: ToolbarOAuthState) -> tuple[str, datetime]:
@@ -199,15 +220,19 @@ def validate_and_consume_toolbar_oauth_state(
     try:
         payload = signing.loads(signed_state, salt=STATE_SIGNER_SALT, max_age=settings.TOOLBAR_OAUTH_STATE_TTL_SECONDS)
     except signing.SignatureExpired as exc:
+        logger.warning("toolbar_oauth_state_validation_failed", code="invalid_state", reason="expired")
         raise ToolbarOAuthError("invalid_state", "OAuth state has expired", 400) from exc
     except signing.BadSignature as exc:
+        logger.warning("toolbar_oauth_state_validation_failed", code="invalid_state", reason="bad_signature")
         raise ToolbarOAuthError("invalid_state", "OAuth state is invalid", 400) from exc
 
     if payload.get("v") != STATE_VERSION:
+        logger.warning("toolbar_oauth_state_validation_failed", code="invalid_state", reason="wrong_version")
         raise ToolbarOAuthError("invalid_state", "Invalid OAuth state version", 400)
 
     nonce = payload.get("nonce")
     if not nonce:
+        logger.warning("toolbar_oauth_state_validation_failed", code="invalid_state", reason="missing_nonce")
         raise ToolbarOAuthError("invalid_state", "OAuth state is missing nonce", 400)
 
     pending_key = _cache_key(STATE_CACHE_PREFIX, nonce)
@@ -215,10 +240,12 @@ def validate_and_consume_toolbar_oauth_state(
 
     # replay guard
     if cache.get(used_key):
+        logger.warning("toolbar_oauth_state_validation_failed", code="state_replay", reason="already_used")
         raise ToolbarOAuthError("state_replay", "OAuth state has already been used", 400)
 
     pending = cache.get(pending_key)
     if not pending:
+        logger.warning("toolbar_oauth_state_validation_failed", code="state_not_found", reason="expired_or_missing")
         raise ToolbarOAuthError("state_not_found", "OAuth state was not found or expired", 400)
 
     # best-effort one-time use marker
@@ -226,13 +253,16 @@ def validate_and_consume_toolbar_oauth_state(
     # This closes the race where two exchanges arrive before `pending_key` is deleted.
     added = cache.add(used_key, True, timeout=settings.TOOLBAR_OAUTH_STATE_TTL_SECONDS)
     if not added:
+        logger.warning("toolbar_oauth_state_validation_failed", code="state_replay", reason="concurrent_use")
         raise ToolbarOAuthError("state_replay", "OAuth state has already been used", 400)
     cache.delete(pending_key)
 
     if payload.get("user_id") != request_user.pk:
+        logger.warning("toolbar_oauth_state_validation_failed", code="state_user_mismatch")
         raise ToolbarOAuthError("state_user_mismatch", "OAuth state user mismatch", 400)
 
     if payload.get("team_id") != request_team.pk:
+        logger.warning("toolbar_oauth_state_validation_failed", code="state_team_mismatch")
         raise ToolbarOAuthError("state_team_mismatch", "OAuth state team mismatch", 400)
 
     normalize_and_validate_app_url(request_team, payload.get("app_url"))
@@ -263,7 +293,7 @@ def build_authorization_url(
         "scope": scopes,
     }
 
-    return f"{base_url.rstrip('/')}/oauth/authorize/?{urlencode(params)}"
+    return f"{base_url}/oauth/authorize/?{urlencode(params)}"
 
 
 def exchange_code_for_tokens(
@@ -273,8 +303,11 @@ def exchange_code_for_tokens(
     code_verifier: str,
 ) -> dict[str, Any]:
     base_url = normalize_base_url_for_oauth(base_url)
-    redirect_uri = f"{base_url.rstrip('/')}{CALLBACK_PATH}"
-    token_url = f"{base_url.rstrip('/')}/oauth/token/"
+    redirect_uri = f"{base_url}{CALLBACK_PATH}"
+    # Use SITE_URL to prevent Host header manipulation from redirecting
+    # the server-side token exchange to an attacker-controlled host.
+    internal_base = getattr(settings, "SITE_URL", base_url).rstrip("/") or base_url
+    token_url = f"{internal_base}/oauth/token/"
 
     data = {
         "grant_type": "authorization_code",
@@ -287,12 +320,18 @@ def exchange_code_for_tokens(
     try:
         response = requests.post(token_url, data=data, timeout=settings.TOOLBAR_OAUTH_EXCHANGE_TIMEOUT_SECONDS)
     except requests.RequestException as exc:
+        logger.warning("toolbar_oauth_token_exchange_failed", code="token_exchange_unavailable", error=str(exc))
         raise ToolbarOAuthError("token_exchange_unavailable", "Failed to exchange code for tokens", 500) from exc
 
     if response.content:
         try:
             payload = response.json()
         except ValueError as exc:
+            logger.warning(
+                "toolbar_oauth_token_exchange_failed",
+                code="token_exchange_invalid_response",
+                status=502,
+            )
             raise ToolbarOAuthError(
                 "token_exchange_invalid_response", "OAuth token exchange returned invalid JSON", 502
             ) from exc
@@ -302,7 +341,14 @@ def exchange_code_for_tokens(
     if response.status_code >= 400:
         error = payload.get("error", "token_exchange_failed")
         detail = payload.get("error_description", "OAuth token exchange failed")
-        raise ToolbarOAuthError(error, detail, 400)
+        status = response.status_code if 400 <= response.status_code < 600 else 502
+        logger.warning(
+            "toolbar_oauth_token_exchange_failed",
+            code=error,
+            status=status,
+            detail=detail,
+        )
+        raise ToolbarOAuthError(error, detail, status)
 
     return {
         "access_token": payload.get("access_token"),

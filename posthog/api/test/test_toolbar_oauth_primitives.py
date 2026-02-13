@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from django.test import override_settings
 
+import requests
 from rest_framework import status
 
 from posthog.api.oauth.toolbar_service import CALLBACK_PATH, get_or_create_toolbar_oauth_application
@@ -35,6 +36,35 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
         assert response.status_code == status.HTTP_200_OK, response.content
         return response.json()
 
+    def test_start_requires_authentication(self):
+        self.client.logout()
+        response = self.client.post(
+            "/api/user/toolbar_oauth_start/",
+            data=json.dumps(
+                {
+                    "app_url": self.team.app_urls[0],
+                    "code_challenge": "x",
+                    "code_challenge_method": "S256",
+                }
+            ),
+            content_type="application/json",
+        )
+        assert response.status_code == 401
+
+    def test_exchange_requires_authentication(self):
+        self.client.logout()
+        response = self.client.post(
+            "/api/user/toolbar_oauth_exchange/",
+            data=json.dumps({"code": "c", "state": "s", "code_verifier": "v"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 401
+
+    def test_callback_requires_authentication(self):
+        self.client.logout()
+        response = self.client.get("/toolbar_oauth/callback?code=c&state=s")
+        assert response.status_code == 401
+
     @override_settings(TOOLBAR_OAUTH_ENABLED=False)
     def test_start_disabled(self):
         response = self.client.post(
@@ -42,19 +72,19 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data=json.dumps({"app_url": self.team.app_urls[0], "code_challenge": "x", "code_challenge_method": "S256"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 404)
+        assert response.status_code == 404
 
     def test_start_returns_authorization_url(self):
         data = self._start()
-        self.assertIn("authorization_url", data)
+        assert "authorization_url" in data
 
         parsed = urlparse(data["authorization_url"])
         qs = parse_qs(parsed.query)
-        self.assertEqual(parsed.scheme, "https")
-        self.assertEqual(parsed.netloc, "testserver")
-        self.assertEqual(qs["redirect_uri"][0], "https://testserver/toolbar_oauth/callback")
-        self.assertIn("state", qs)
-        self.assertEqual(qs["code_challenge_method"][0], "S256")
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "testserver"
+        assert qs["redirect_uri"][0] == "https://testserver/toolbar_oauth/callback"
+        assert "state" in qs
+        assert qs["code_challenge_method"][0] == "S256"
 
     def test_start_rejects_unallowed_url(self):
         response = self.client.post(
@@ -68,7 +98,7 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             ),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 403)
+        assert response.status_code == 403
 
     def test_start_rejects_insecure_non_loopback_app_url(self):
         response = self.client.post(
@@ -82,8 +112,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             ),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "invalid_app_url")
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_app_url"
 
     def test_start_allows_http_loopback_app_url(self):
         self.team.app_urls = [*self.team.app_urls, "http://localhost:3000"]
@@ -100,7 +130,25 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             ),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 200, response.content)
+        assert response.status_code == 200, response.content
+
+    def test_start_rejects_missing_app_url(self):
+        response = self.client.post(
+            "/api/user/toolbar_oauth_start/",
+            data=json.dumps({"code_challenge": "x", "code_challenge_method": "S256"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_request"
+
+    def test_start_rejects_missing_code_challenge(self):
+        response = self.client.post(
+            "/api/user/toolbar_oauth_start/",
+            data=json.dumps({"app_url": self.team.app_urls[0], "code_challenge_method": "S256"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_request"
 
     def test_start_rejects_invalid_json_body(self):
         response = self.client.post(
@@ -108,8 +156,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data="{not-json",
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "invalid_json")
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_json"
 
     def test_start_rejects_invalid_code_challenge_method(self):
         response = self.client.post(
@@ -123,8 +171,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             ),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "invalid_request")
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_request"
 
     def test_oauth_application_is_scoped_per_organization(self):
         base_url = "https://us.posthog.example"
@@ -140,9 +188,9 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
         other_org.members.add(other_user)
         second_app = get_or_create_toolbar_oauth_application(base_url=base_url, user=other_user)
 
-        self.assertNotEqual(first_app.id, second_app.id)
-        self.assertEqual(first_app.organization, self.organization)
-        self.assertEqual(second_app.organization, other_org)
+        assert first_app.id != second_app.id
+        assert first_app.organization == self.organization
+        assert second_app.organization == other_org
 
     def test_oauth_application_supports_multiple_redirect_uris_within_org(self):
         first_base_url = "https://us.posthog.example"
@@ -151,22 +199,19 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
         first_app = get_or_create_toolbar_oauth_application(base_url=first_base_url, user=self.user)
         second_app = get_or_create_toolbar_oauth_application(base_url=second_base_url, user=self.user)
 
-        self.assertEqual(first_app.id, second_app.id)
+        assert first_app.id == second_app.id
         second_app.refresh_from_db()
 
         redirect_uris = {uri for uri in second_app.redirect_uris.split(" ") if uri}
-        self.assertSetEqual(
-            redirect_uris,
-            {
-                f"{first_base_url}{CALLBACK_PATH}",
-                f"{second_base_url}{CALLBACK_PATH}",
-            },
-        )
+        assert redirect_uris == {
+            f"{first_base_url}{CALLBACK_PATH}",
+            f"{second_base_url}{CALLBACK_PATH}",
+        }
 
     def test_callback_renders_bridge_with_code_and_state(self):
         response = self.client.get("/toolbar_oauth/callback?code=test_code&state=test_state")
 
-        self.assertEqual(response.status_code, 200)
+        assert response.status_code == 200
         self.assertContains(response, "openerWindow.postMessage")
         self.assertContains(response, '"code": "test_code"')
         self.assertContains(response, '"state": "test_state"')
@@ -176,7 +221,7 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             "/toolbar_oauth/callback?error=access_denied&error_description=user+cancelled&state=test_state"
         )
 
-        self.assertEqual(response.status_code, 200)
+        assert response.status_code == 200
         self.assertContains(response, '"error": "access_denied"')
         self.assertContains(response, '"error_description": "user cancelled"')
         self.assertContains(response, '"state": "test_state"')
@@ -184,7 +229,7 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
     @override_settings(TOOLBAR_OAUTH_ENABLED=False)
     def test_callback_disabled(self):
         response = self.client.get("/toolbar_oauth/callback?code=test_code&state=test_state")
-        self.assertEqual(response.status_code, 404)
+        assert response.status_code == 404
 
     @patch("posthog.api.oauth.toolbar_service.requests.post")
     def test_exchange_success(self, mock_post):
@@ -206,8 +251,22 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data=json.dumps({"code": "test_code", "state": state, "code_verifier": "test_verifier"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()["access_token"], "pha_abc")
+        assert response.status_code == 200, response.content
+        assert response.json()["access_token"] == "pha_abc"
+
+    @patch("posthog.api.oauth.toolbar_service.requests.post")
+    def test_exchange_handles_network_failure(self, mock_post):
+        start_data = self._start()
+        state = parse_qs(urlparse(start_data["authorization_url"]).query)["state"][0]
+        mock_post.side_effect = requests.RequestException("connection failed")
+
+        response = self.client.post(
+            "/api/user/toolbar_oauth_exchange/",
+            data=json.dumps({"code": "test_code", "state": state, "code_verifier": "test_verifier"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 500
+        assert response.json()["code"] == "token_exchange_unavailable"
 
     @patch("posthog.api.oauth.toolbar_service.requests.post")
     def test_exchange_rejects_tampered_state(self, mock_post):
@@ -220,8 +279,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data=json.dumps({"code": "test_code", "state": tampered_state, "code_verifier": "test_verifier"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "invalid_state")
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_state"
         mock_post.assert_not_called()
 
     @patch("posthog.api.oauth.toolbar_service.requests.post")
@@ -244,8 +303,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data=json.dumps({"code": "test_code", "state": state, "code_verifier": "test_verifier"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "state_user_mismatch")
+        assert response.status_code == 400
+        assert response.json()["code"] == "state_user_mismatch"
         mock_post.assert_not_called()
 
     @patch("posthog.api.oauth.toolbar_service.requests.post")
@@ -263,8 +322,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data=json.dumps({"code": "test_code", "state": state, "code_verifier": "test_verifier"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "state_team_mismatch")
+        assert response.status_code == 400
+        assert response.json()["code"] == "state_team_mismatch"
         mock_post.assert_not_called()
 
     def test_exchange_rejects_invalid_json_body(self):
@@ -273,8 +332,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data="{not-json",
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["code"], "invalid_json")
+        assert response.status_code == 400
+        assert response.json()["code"] == "invalid_json"
 
     @patch("posthog.api.oauth.toolbar_service.requests.post")
     def test_exchange_returns_error_for_non_json_token_response(self, mock_post):
@@ -290,8 +349,8 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data=json.dumps({"code": "test_code", "state": state, "code_verifier": "test_verifier"}),
             content_type="application/json",
         )
-        self.assertEqual(response.status_code, 502)
-        self.assertEqual(response.json()["code"], "token_exchange_invalid_response")
+        assert response.status_code == 502
+        assert response.json()["code"] == "token_exchange_invalid_response"
 
     @patch("posthog.api.oauth.toolbar_service.requests.post")
     def test_exchange_replay_fails(self, mock_post):
@@ -313,12 +372,12 @@ class TestToolbarOAuthPrimitives(APIBaseTest):
             data=json.dumps({"code": "test_code", "state": state, "code_verifier": "test_verifier"}),
             content_type="application/json",
         )
-        self.assertEqual(first.status_code, 200)
+        assert first.status_code == 200
 
         second = self.client.post(
             "/api/user/toolbar_oauth_exchange/",
             data=json.dumps({"code": "test_code", "state": state, "code_verifier": "test_verifier"}),
             content_type="application/json",
         )
-        self.assertEqual(second.status_code, 400)
-        self.assertEqual(second.json()["code"], "state_replay")
+        assert second.status_code == 400
+        assert second.json()["code"] == "state_replay"
